@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Welcome back to the UK, Babe!</title>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#000; color:#eee;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; -webkit-user-select:none; user-select:none; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; }
+  video { position:fixed; width:1px; height:1px; opacity:0; pointer-events:none; }
+
+  .ui { position:fixed; z-index:5; display:flex; flex-direction:column; align-items:center; gap:14px;
+    right:calc(env(safe-area-inset-right) + 14px); top:50%; transform:translateY(-50%); }
+  .btn { width:56px; height:56px; border-radius:50%; border:3px solid #fff; background:rgba(0,0,0,.35);
+    display:grid; place-items:center; color:#fff; font-size:20px; }
+  #rec i { width:38px; height:38px; border-radius:50%; background:#e0243a; transition:.2s; }
+  #rec.on i { width:22px; height:22px; border-radius:5px; }
+  #flip { width:42px; height:42px; border-width:2px; font-size:18px; }
+  #time { font:600 13px/1 -apple-system, sans-serif; font-variant-numeric:tabular-nums;
+    background:rgba(0,0,0,.45); padding:4px 8px; border-radius:6px; visibility:hidden; }
+  #time.on { visibility:visible; color:#ff4d5e; }
+
+  .sheet { position:fixed; inset:0; z-index:9; display:flex; flex-direction:column; gap:16px;
+    align-items:center; justify-content:center; text-align:center; background:#0d0d0d; padding:24px; }
+  .sheet h1 { font-size:20px; letter-spacing:.14em; color:#f5b700; }
+  .sheet p { color:#999; font-size:14px; max-width:420px; line-height:1.4; }
+  .sheet button, .sheet a { font-family:inherit; font-weight:700; font-size:16px; line-height:1; padding:14px 26px; border-radius:30px; border:0;
+    background:#f5b700; color:#111; text-decoration:none; }
+  .sheet .ghost { background:#262626; color:#eee; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; }
+  .hidden { display:none !important; }
+  #rotate { display:none; }
+  @media (orientation:portrait) { #rotate { display:flex; } }
+</style>
+</head>
+<body>
+<video id="v" playsinline muted autoplay></video>
+<canvas id="c"></canvas>
+
+<div class="ui hidden" id="ui">
+  <div id="time">00:00</div>
+  <button class="btn" id="rec" aria-label="Record"><i></i></button>
+  <button class="btn" id="flip" aria-label="Switch camera">⟲</button>
+</div>
+
+<div class="sheet" id="start">
+  <h1>● ARRIVALS</h1>
+  <p>Front camera, sideways. Press record — the board flips in on camera. Tap the screen to replay the flip.</p>
+  <button id="go">Open camera</button>
+</div>
+
+<div class="sheet hidden" id="done">
+  <h1>VIDEO READY</h1>
+  <video id="pv" playsinline controls style="width:auto;height:auto;max-width:70vw;max-height:52vh;opacity:1;position:static;pointer-events:auto;border-radius:8px"></video>
+  <div class="row">
+    <button id="save">Save video</button>
+    <a id="dl" class="ghost hidden" download>Download</a>
+    <button id="again" class="ghost">Record again</button>
+  </div>
+</div>
+
+<div class="sheet" id="rotate"><p style="font-size:18px;color:#eee">↻ Turn your phone sideways</p></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('v'), cv = $('c'), cx = cv.getContext('2d');
+
+// ---------- Flip board (drawn on canvas so it's in the recording) ----------
+const ROWS = ['WELCOME BACK TO THE UK,', 'BABE!'];
+const COLS = 23;
+const CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ!,';
+const FLIP = 70;
+const tiles = [];
+ROWS.forEach((text, r) => {
+  const pad = Math.floor((COLS - text.length) / 2);
+  const line = (' '.repeat(pad) + text).padEnd(COLS);
+  [...line].forEach((ch, c) => tiles.push({ r, c, target: ch, cur: ' ', prev: ' ', t0: -1 }));
+});
+
+let run = 0;
+function play(toBlank) {
+  const id = ++run;
+  tiles.forEach(t => {
+    const goal = toBlank ? ' ' : t.target;
+    if (t.cur === goal) return;
+    setTimeout(function step() {
+      if (id !== run) return;
+      t.prev = t.cur;
+      t.cur = CHARS[(CHARS.indexOf(t.cur) + 1) % CHARS.length];
+      t.t0 = performance.now();
+      if (t.cur !== goal) setTimeout(step, FLIP + 8);
+    }, (t.r * 6 + t.c) * 35 + Math.random() * 120);
+  });
+}
+function reset() { run++; tiles.forEach(t => { t.cur = t.prev = ' '; t.t0 = -1; }); }
+
+let W, H, dpr;
+function fit() {
+  dpr = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+}
+addEventListener('resize', () => { if (!recording) fit(); });
+fit();
+
+function rr(x, y, w, h, r) { cx.beginPath(); cx.roundRect ? cx.roundRect(x, y, w, h, r) : cx.rect(x, y, w, h); }
+
+function half(tile, ch, x, y, w, h, top, scale) {
+  // draws one half of a tile; scale squashes toward the hinge for the moving flap
+  const hy = y + h / 2;
+  cx.save();
+  cx.translate(0, hy); cx.scale(1, scale); cx.translate(0, -hy);
+  cx.beginPath(); cx.rect(x, top ? y : hy, w, h / 2); cx.clip();
+  const g = cx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, '#242424'); g.addColorStop(.5, '#1b1b1b'); g.addColorStop(1, '#131313');
+  cx.fillStyle = g; rr(x, y, w, h, w * .07); cx.fill();
+  cx.fillStyle = tile.r === 1 ? '#f5b700' : '#f2f2f2';
+  cx.fillText(ch, x + w / 2, hy + h * .03);
+  cx.restore();
+}
+
+function drawBoard(now) {
+  const n = COLS, gap = W * .004;
+  const tw = Math.min((W * .9 - gap * (n - 1)) / n, H * .1);
+  const th = tw * 1.32;
+  const bw = tw * n + gap * (n - 1);
+  const bx = (W - bw) / 2;
+  const by = H - th * 2 - gap * 1.6 - Math.max(H * .05, 12);
+  // backing band
+  cx.fillStyle = 'rgba(8,8,8,.82)';
+  rr(bx - tw * .5, by - th * .62, bw + tw, th * 2 + gap * 1.6 + th * .9, tw * .25); cx.fill();
+  // header
+  cx.font = `700 ${tw * .38}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  cx.textBaseline = 'middle'; cx.textAlign = 'left';
+  cx.fillStyle = '#f5b700';
+  const blink = Math.floor(now / 800) % 2 ? .25 : 1;
+  cx.globalAlpha = blink; cx.beginPath(); cx.arc(bx + tw * .15, by - th * .3, tw * .1, 0, 7); cx.fill(); cx.globalAlpha = 1;
+  cx.letterSpacing = `${tw * .08}px`;
+  cx.fillText('ARRIVALS', bx + tw * .45, by - th * .3);
+  cx.textAlign = 'right'; cx.fillStyle = '#8a8a8a';
+  const time = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' });
+  cx.fillText('LONDON ' + time, bx + bw, by - th * .3);
+  cx.letterSpacing = '0px';
+  // tiles
+  cx.font = `700 ${th * .72}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  cx.textAlign = 'center';
+  for (const t of tiles) {
+    const x = bx + t.c * (tw + gap), y = by + t.r * (th + gap * 1.6);
+    const p = t.t0 < 0 ? 1 : Math.min(1, (now - t.t0) / FLIP);
+    half(t, t.cur, x, y, tw, th, true, 1);                 // new top
+    half(t, p < 1 ? t.prev : t.cur, x, y, tw, th, false, 1); // old bottom until done
+    if (p < .5) half(t, t.prev, x, y, tw, th, true, Math.cos(p * Math.PI));       // old top falling
+    else if (p < 1) half(t, t.cur, x, y, tw, th, false, -Math.cos(p * Math.PI));  // new bottom landing
+    cx.fillStyle = '#000'; cx.fillRect(x, y + th / 2 - .5, tw, 1);               // hinge line
+  }
+}
+
+// ---------- Camera ----------
+let facing = 'user', stream;
+async function openCam() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    audio: true
+  });
+  video.srcObject = stream;
+  await video.play();
+}
+
+function frame(now) {
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.fillStyle = '#000'; cx.fillRect(0, 0, W, H);
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (vw) {
+    const s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+    cx.save();
+    if (facing === 'user') { cx.translate(W, 0); cx.scale(-1, 1); } // mirror selfie view
+    cx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    cx.restore();
+  }
+  drawBoard(now);
+  requestAnimationFrame(frame);
+}
+
+// ---------- Recording ----------
+let recorder, chunks = [], recording = false, t0, timer, blob, wake;
+const mime = ['video/mp4', 'video/mp4;codecs=avc1', 'video/webm;codecs=vp9', 'video/webm']
+  .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+
+async function startRec() {
+  const out = cv.captureStream(30);
+  stream.getAudioTracks().forEach(a => out.addTrack(a));
+  recorder = new MediaRecorder(out, mime ? { mimeType: mime, videoBitsPerSecond: 8e6 } : undefined);
+  chunks = [];
+  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+  recorder.onstop = showDone;
+  recorder.start(500);
+  recording = true; $('rec').classList.add('on'); $('time').classList.add('on');
+  t0 = Date.now();
+  timer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    $('time').textContent = String(s / 60 | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }, 250);
+  reset(); setTimeout(() => play(false), 700);
+  try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+function stopRec() {
+  recording = false; clearInterval(timer);
+  $('rec').classList.remove('on'); $('time').classList.remove('on'); $('time').textContent = '00:00';
+  recorder.stop();
+  try { wake && wake.release(); } catch (e) {}
+}
+function showDone() {
+  blob = new Blob(chunks, { type: recorder.mimeType || mime || 'video/mp4' });
+  const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+  const url = URL.createObjectURL(blob);
+  $('pv').src = url;
+  $('dl').href = url; $('dl').download = `welcome-back.${ext}`;
+  const file = new File([blob], `welcome-back.${ext}`, { type: blob.type });
+  const canShare = navigator.canShare && navigator.canShare({ files: [file] });
+  $('save').classList.toggle('hidden', !canShare);
+  $('dl').classList.toggle('hidden', !!canShare);
+  $('save').onclick = () => navigator.share({ files: [file] }).catch(() => {});
+  $('done').classList.remove('hidden');
+}
+
+// ---------- Wiring ----------
+$('go').onclick = async () => {
+  try {
+    await openCam();
+    $('start').classList.add('hidden'); $('ui').classList.remove('hidden');
+    requestAnimationFrame(frame);
+    setTimeout(() => play(false), 500);
+  } catch (e) {
+    $('start').querySelector('p').textContent = 'Camera blocked. Allow camera + microphone for this site in Safari (aA → Website Settings), then reload.';
+  }
+};
+$('rec').onclick = e => { e.stopPropagation(); recording ? stopRec() : startRec(); };
+$('flip').onclick = async e => {
+  e.stopPropagation(); if (recording) return;
+  facing = facing === 'user' ? 'environment' : 'user'; await openCam();
+};
+cv.onclick = () => { reset(); setTimeout(() => play(false), 150); };
+$('again').onclick = () => { $('done').classList.add('hidden'); $('pv').pause(); reset(); setTimeout(() => play(false), 300); };
+</script>
+</body>
+</html>
