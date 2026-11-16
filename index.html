@@ -32,8 +32,9 @@
   .sheet .ghost { background:#262626; color:#eee; }
   .row { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; }
   .hidden { display:none !important; }
-  #rotate { display:none; }
-  @media (orientation:portrait) { #rotate { display:flex; } }
+  @media (orientation:portrait) {
+    .ui { top:calc(env(safe-area-inset-top) + 14px); transform:none; flex-direction:row-reverse; }
+  }
 </style>
 </head>
 <body>
@@ -48,7 +49,7 @@
 
 <div class="sheet" id="start">
   <h1>● ARRIVALS</h1>
-  <p>Front camera, sideways. Press record — the board flips in on camera. Tap the screen to replay the flip.</p>
+  <p>Front camera, phone upright. Press record — the board flips in on camera. Tap the screen to replay the flip.</p>
   <button id="go">Open camera</button>
 </div>
 
@@ -62,23 +63,31 @@
   </div>
 </div>
 
-<div class="sheet" id="rotate"><p style="font-size:18px;color:#eee">↻ Turn your phone sideways</p></div>
 
 <script>
 const $ = id => document.getElementById(id);
 const video = $('v'), cv = $('c'), cx = cv.getContext('2d');
 
 // ---------- Flip board (drawn on canvas so it's in the recording) ----------
-const ROWS = ['WELCOME BACK TO THE UK,', 'BABE!'];
-const COLS = 23;
+// Vertical: 4 short rows. Sideways fallback: 2 long rows.
+const LAYOUTS = {
+  portrait:  { rows: ['WELCOME', 'BACK TO', 'THE UK,', 'BABE!'], cols: 7 },
+  landscape: { rows: ['WELCOME BACK TO THE UK,', 'BABE!'], cols: 23 }
+};
 const CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ!,';
 const FLIP = 70;
-const tiles = [];
-ROWS.forEach((text, r) => {
-  const pad = Math.floor((COLS - text.length) / 2);
-  const line = (' '.repeat(pad) + text).padEnd(COLS);
-  [...line].forEach((ch, c) => tiles.push({ r, c, target: ch, cur: ' ', prev: ' ', t0: -1 }));
-});
+let tiles = [], COLS, NROWS, layout, started = false;
+function build(name) {
+  if (layout === name) return;
+  layout = name;
+  const L = LAYOUTS[name]; COLS = L.cols; NROWS = L.rows.length; tiles = [];
+  L.rows.forEach((text, r) => {
+    const pad = Math.floor((COLS - text.length) / 2);
+    const line = (' '.repeat(pad) + text).padEnd(COLS);
+    [...line].forEach((ch, c) => tiles.push({ r, c, target: ch, cur: ' ', prev: ' ', t0: -1, gold: r === NROWS - 1 }));
+  });
+  if (started) play(false);
+}
 
 let run = 0;
 function play(toBlank) {
@@ -92,7 +101,7 @@ function play(toBlank) {
       t.cur = CHARS[(CHARS.indexOf(t.cur) + 1) % CHARS.length];
       t.t0 = performance.now();
       if (t.cur !== goal) setTimeout(step, FLIP + 8);
-    }, (t.r * 6 + t.c) * 35 + Math.random() * 120);
+    }, (t.r * 3 + t.c) * 40 + Math.random() * 120);
   });
 }
 function reset() { run++; tiles.forEach(t => { t.cur = t.prev = ' '; t.t0 = -1; }); }
@@ -102,6 +111,7 @@ function fit() {
   dpr = Math.min(devicePixelRatio || 1, 2);
   W = innerWidth; H = innerHeight;
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  build(H >= W ? 'portrait' : 'landscape');
 }
 addEventListener('resize', () => { if (!recording) fit(); });
 fit();
@@ -117,23 +127,24 @@ function half(tile, ch, x, y, w, h, top, scale) {
   const g = cx.createLinearGradient(0, y, 0, y + h);
   g.addColorStop(0, '#242424'); g.addColorStop(.5, '#1b1b1b'); g.addColorStop(1, '#131313');
   cx.fillStyle = g; rr(x, y, w, h, w * .07); cx.fill();
-  cx.fillStyle = tile.r === 1 ? '#f5b700' : '#f2f2f2';
+  cx.fillStyle = tile.gold ? '#f5b700' : '#f2f2f2';
   cx.fillText(ch, x + w / 2, hy + h * .03);
   cx.restore();
 }
 
 function drawBoard(now) {
   const n = COLS, gap = W * .004;
-  const tw = Math.min((W * .9 - gap * (n - 1)) / n, H * .1);
+  const tw = Math.min((W * .9 - gap * (n - 1)) / n, H * .1, W * .12);
   const th = tw * 1.32;
+  const rg = gap * 1.6, bh = th * NROWS + rg * (NROWS - 1);
   const bw = tw * n + gap * (n - 1);
   const bx = (W - bw) / 2;
-  const by = H - th * 2 - gap * 1.6 - Math.max(H * .05, 12);
+  const by = H - bh - Math.max(H * .05, 12);
   // backing band
   cx.fillStyle = 'rgba(8,8,8,.82)';
-  rr(bx - tw * .5, by - th * .62, bw + tw, th * 2 + gap * 1.6 + th * .9, tw * .25); cx.fill();
+  rr(bx - tw * .5, by - th * .62, bw + tw, bh + th * .9, tw * .25); cx.fill();
   // header
-  cx.font = `700 ${tw * .38}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  cx.font = `700 ${Math.min(tw * .38, W * .042)}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
   cx.textBaseline = 'middle'; cx.textAlign = 'left';
   cx.fillStyle = '#f5b700';
   const blink = Math.floor(now / 800) % 2 ? .25 : 1;
@@ -148,7 +159,7 @@ function drawBoard(now) {
   cx.font = `700 ${th * .72}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
   cx.textAlign = 'center';
   for (const t of tiles) {
-    const x = bx + t.c * (tw + gap), y = by + t.r * (th + gap * 1.6);
+    const x = bx + t.c * (tw + gap), y = by + t.r * (th + rg);
     const p = t.t0 < 0 ? 1 : Math.min(1, (now - t.t0) / FLIP);
     half(t, t.cur, x, y, tw, th, true, 1);                 // new top
     half(t, p < 1 ? t.prev : t.cur, x, y, tw, th, false, 1); // old bottom until done
@@ -233,6 +244,7 @@ $('go').onclick = async () => {
     await openCam();
     $('start').classList.add('hidden'); $('ui').classList.remove('hidden');
     requestAnimationFrame(frame);
+    started = true;
     setTimeout(() => play(false), 500);
   } catch (e) {
     $('start').querySelector('p').textContent = 'Camera blocked. Allow camera + microphone for this site in Safari (aA → Website Settings), then reload.';
